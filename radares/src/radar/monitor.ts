@@ -5,11 +5,11 @@ import { File, Paths } from 'expo-file-system';
 import { AppState } from 'react-native';
 import type { LiveActivity } from 'expo-widgets';
 
-import { RadarActivity, type RadarActivityProps } from '@/widgets/radar-activity';
-import { RadarWidget } from '@/widgets/radar-widget';
+import type { RadarActivityProps } from '@/widgets/radar-activity';
 
 import { ensureRadarsAt, getDataSummary, getRadars } from './data';
 import { formatDistance, spokenDistance } from './geo';
+import { foregroundOnly, surfaces } from './native-surfaces';
 import { initialTrackerState, tick, type TrackerEvent } from './tracker';
 import type { Fix, Radar, RadarKind, Target } from './types';
 
@@ -92,6 +92,7 @@ export function updateSettings(patch: Partial<Settings>) {
 
 let tracker = initialTrackerState;
 let activity: LiveActivity<RadarActivityProps> | null = null;
+let foregroundWatch: Location.LocationSubscription | null = null;
 let lastDataCheck = 0;
 let lastActivityUpdate = 0;
 let lastActivityDistance = '';
@@ -122,7 +123,7 @@ function ignoreFailure(promise: Promise<unknown>) {
 function updateWidget(title: string, detail: string, alert: boolean) {
   const updatedAt = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
   try {
-    RadarWidget.updateSnapshot({ title, detail, updatedAt, alert });
+    surfaces?.widget.updateSnapshot({ title, detail, updatedAt, alert });
     lastWidgetUpdate = Date.now();
   } catch {
     // Widgets are optional.
@@ -222,9 +223,11 @@ export async function processLocations(locations: Location.LocationObject[]) {
 }
 
 function startActivity() {
+  if (!surfaces) return;
   // iOS only allows starting a Live Activity while the app is in the foreground.
   try {
-    activity = RadarActivity.getInstances()[0] ?? RadarActivity.start(IDLE_ACTIVITY, 'radares://');
+    activity =
+      surfaces.activity.getInstances()[0] ?? surfaces.activity.start(IDLE_ACTIVITY, 'radares://');
   } catch {
     activity = null;
   }
@@ -233,9 +236,11 @@ function startActivity() {
 export async function startMonitoring(): Promise<StartResult> {
   const foreground = await Location.requestForegroundPermissionsAsync();
   if (!foreground.granted) return 'location-denied';
-  const background = await Location.requestBackgroundPermissionsAsync();
-  if (!background.granted) return 'background-denied';
-  await Notifications.requestPermissionsAsync();
+  if (!foregroundOnly) {
+    const background = await Location.requestBackgroundPermissionsAsync();
+    if (!background.granted) return 'background-denied';
+    await Notifications.requestPermissionsAsync();
+  }
 
   const position =
     (await Location.getLastKnownPositionAsync()) ??
@@ -248,13 +253,21 @@ export async function startMonitoring(): Promise<StartResult> {
   }
 
   tracker = initialTrackerState;
-  await Location.startLocationUpdatesAsync(LOCATION_TASK, {
-    accuracy: Location.Accuracy.BestForNavigation,
-    activityType: Location.ActivityType.AutomotiveNavigation,
-    distanceInterval: 10,
-    pausesUpdatesAutomatically: false,
-    showsBackgroundLocationIndicator: true,
-  });
+  if (foregroundOnly) {
+    foregroundWatch?.remove();
+    foregroundWatch = await Location.watchPositionAsync(
+      { accuracy: Location.Accuracy.BestForNavigation, distanceInterval: 10, timeInterval: 1000 },
+      (location) => ignoreFailure(processLocations([location]))
+    );
+  } else {
+    await Location.startLocationUpdatesAsync(LOCATION_TASK, {
+      accuracy: Location.Accuracy.BestForNavigation,
+      activityType: Location.ActivityType.AutomotiveNavigation,
+      distanceInterval: 10,
+      pausesUpdatesAutomatically: false,
+      showsBackgroundLocationIndicator: true,
+    });
+  }
 
   startActivity();
   updateWidget('Monitorando', 'Nenhum radar à frente', false);
@@ -263,13 +276,16 @@ export async function startMonitoring(): Promise<StartResult> {
 }
 
 export async function stopMonitoring() {
-  if (await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK)) {
+  if (foregroundOnly) {
+    foregroundWatch?.remove();
+    foregroundWatch = null;
+  } else if (await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK)) {
     await Location.stopLocationUpdatesAsync(LOCATION_TASK);
   }
   Speech.stop();
   tracker = initialTrackerState;
   ignoreFailure(Notifications.dismissNotificationAsync(NOTIFICATION_ID));
-  for (const instance of RadarActivity.getInstances()) {
+  for (const instance of surfaces?.activity.getInstances() ?? []) {
     ignoreFailure(instance.end('immediate'));
   }
   activity = null;
@@ -279,10 +295,11 @@ export async function stopMonitoring() {
 
 /** Reattaches the UI and Live Activity after the app process was relaunched. */
 export async function syncMonitoring() {
+  if (foregroundOnly) return;
   const running = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK);
   if (running) {
     try {
-      activity = RadarActivity.getInstances()[0] ?? null;
+      activity = surfaces?.activity.getInstances()[0] ?? null;
     } catch {
       activity = null;
     }

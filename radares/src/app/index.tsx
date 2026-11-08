@@ -1,6 +1,6 @@
 import { useKeepAwake } from 'expo-keep-awake';
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import { Linking, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import { Linking, Platform, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { formatDistance } from '@/radar/geo';
@@ -16,6 +16,7 @@ import {
   type MonitorSnapshot,
   type StartResult,
 } from '@/radar/monitor';
+import { foregroundOnly } from '@/radar/native-surfaces';
 import type { Target } from '@/radar/types';
 
 const palette = {
@@ -105,7 +106,23 @@ function Idle({ snapshot }: { snapshot: MonitorSnapshot }) {
   );
 }
 
-export default function HomeScreen() {
+function OpenOnIphone() {
+  return (
+    <View style={[styles.screen, styles.center]}>
+      <Text style={styles.idleTitle}>Abra no Expo Go</Text>
+      <Text style={styles.caption}>
+        O Radares não funciona no navegador. Abra o app Expo Go no iPhone e escaneie o QR code ou
+        digite o endereço exp:// mostrado no terminal.
+      </Text>
+    </View>
+  );
+}
+
+export default function Route() {
+  return Platform.OS === 'web' ? <OpenOnIphone /> : <HomeScreen />;
+}
+
+function HomeScreen() {
   const snapshot = useSyncExternalStore(subscribe, getSnapshot);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<Exclude<StartResult, 'ok'> | null>(null);
@@ -203,6 +220,9 @@ export default function HomeScreen() {
           </Text>
         </Pressable>
 
+        {foregroundOnly && (
+          <Text style={styles.credit}>No Expo Go, os avisos só funcionam com o app aberto.</Text>
+        )}
         <Text style={styles.credit}>{dataLine}</Text>
         <Text style={styles.credit}>
           Dados: Pardal (ODbL) · © colaboradores do OpenStreetMap. A sinalização da via sempre
